@@ -8,7 +8,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 from alpha.landing_guidance import (
     BoosterState, LandingTarget, SuicideBurnCalculator, GridFinController,
-    LandingGuidance, G0,
+    LandingGuidance, G0, MonteCarloLanding,
 )
 from omega.recovery_controller import (
     BargeController, BargePosition, BargeState, RecoveryCoordinator,
@@ -121,6 +121,32 @@ def test_landing_assignment():
 
     barge_name = coord.assign_landing(1, 29.0, -79.0)
     assert barge_name in ("OCISLY", "JRTI")
+
+
+def test_monte_carlo_landing():
+    mc = MonteCarloLanding(seed=42, num_samples=200)
+    result = mc.simulate(
+        nominal_altitude=5000,
+        nominal_velocity=300,
+        nominal_mass=25000,
+        thrust=760000,
+        target_lat=28.5,
+        target_lon=-80.6,
+    )
+    assert result["samples"] == 200
+    assert 0 <= result["success_rate"] <= 1
+    assert result["mean_distance_m"] >= 0
+    assert "p95_distance_m" in result
+
+
+def test_monte_carlo_deterministic():
+    mc1 = MonteCarloLanding(seed=42, num_samples=100)
+    r1 = mc1.simulate(5000, 300, 25000, 760000, 28.5, -80.6)
+
+    mc2 = MonteCarloLanding(seed=42, num_samples=100)
+    r2 = mc2.simulate(5000, 300, 25000, 760000, 28.5, -80.6)
+
+    assert r1["mean_distance_m"] == r2["mean_distance_m"]
 
 
 if __name__ == "__main__":

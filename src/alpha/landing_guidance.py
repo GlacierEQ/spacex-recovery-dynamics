@@ -241,3 +241,114 @@ class LandingGuidance:
             "descent_rate": round((first_alt - last_alt) / max(elapsed, 0.01), 1),
             "burn_active": self._burn_active,
         }
+
+
+class MonteCarloLanding:
+    """Monte Carlo simulation for landing dispersion analysis.
+
+    Propagates N random trajectories with perturbed initial conditions
+    and atmospheric models to compute landing probability distributions.
+    """
+
+    def __init__(
+        self,
+        seed: int = 42,
+        num_samples: int = 1000,
+        gravity: float = G0,
+        isp: float = 311.0,
+    ):
+        self.seed = seed
+        self.num_samples = num_samples
+        self.gravity = gravity
+        self.isp = isp
+        self._rng_state = seed
+
+    def _random(self) -> float:
+        """Simple LCG random number generator [0, 1)."""
+        self._rng_state = (1103515245 * self._rng_state + 12345) & 0x7FFFFFFF
+        return self._rng_state / 0x7FFFFFFF
+
+    def _gaussian(self, mean: float, std: float) -> float:
+        """Box-Muller transform for Gaussian random numbers."""
+        u1 = max(self._random(), 1e-10)
+        u2 = self._random()
+        z = math.sqrt(-2 * math.log(u1)) * math.cos(2 * math.pi * u2)
+        return mean + std * z
+
+    def simulate(
+        self,
+        nominal_altitude: float,
+        nominal_velocity: float,
+        nominal_mass: float,
+        thrust: float,
+        target_lat: float,
+        target_lon: float,
+        altitude_std: float = 50.0,
+        velocity_std: float = 10.0,
+        wind_std: float = 5.0,
+        thrust_std: float = 0.02,
+        mass_std: float = 0.01,
+    ) -> dict:
+        """Run Monte Carlo landing dispersion simulation.
+
+        Returns statistics on landing accuracy, success rate, and dispersion.
+        """
+        calc = SuicideBurnCalculator(self.gravity, self.isp)
+        results = []
+
+        for _ in range(self.num_samples):
+            alt = self._gaussian(nominal_altitude, altitude_std)
+            vel = max(0, self._gaussian(nominal_velocity, velocity_std))
+            mass = max(1000, self._gaussian(nominal_mass, mass_std * nominal_mass))
+            t = thrust * (1 + self._gaussian(0, thrust_std))
+            wind = self._gaussian(0, wind_std)
+
+            burn = calc.hoverslam_timing(alt, vel, mass, t)
+
+            if burn is None:
+                results.append({"success": False, "distance_m": float("inf"), "reason": "insufficient_thrust"})
+                continue
+
+            overshoot = wind * burn.duration
+            lateral_disp = self._gaussian(0, vel * 0.01)
+            total_disp = math.sqrt(overshoot ** 2 + lateral_disp ** 2)
+
+            landing_lat = target_lat + (total_disp / 111000) * math.cos(math.radians(target_lat))
+            landing_lon = target_lon + (total_disp / (111000 * math.cos(math.radians(target_lat))))
+
+            distance = total_disp
+
+            success = distance < 50.0
+            results.append({
+                "success": success,
+                "distance_m": distance,
+                "overshoot_m": overshoot,
+                "landing_lat": landing_lat,
+                "landing_lon": landing_lon,
+            })
+
+        successes = [r for r in results if r["success"]]
+        distances = [r["distance_m"] for r in results if r["distance_m"] < float("inf")]
+
+        if not distances:
+            return {"success_rate": 0, "samples": self.num_samples}
+
+        distances_sorted = sorted(distances)
+        n = len(distances_sorted)
+
+        return {
+            "success_rate": len(successes) / self.num_samples,
+            "samples": self.num_samples,
+            "mean_distance_m": sum(distances) / n,
+            "median_distance_m": distances_sorted[n // 2],
+            "std_distance_m": math.sqrt(
+                sum((d - sum(distances) / n) ** 2 for d in distances) / n
+            ),
+            "p95_distance_m": distances_sorted[int(0.95 * n)],
+            "p99_distance_m": distances_sorted[int(0.99 * n)],
+            "max_distance_m": distances_sorted[-1],
+            "min_distance_m": distances_sorted[0],
+            "touchdown_within_10m": sum(1 for d in distances if d < 10) / self.num_samples,
+            "touchdown_within_50m": sum(1 for d in distances if d < 50) / self.num_samples,
+            "touchdown_within_100m": sum(1 for d in distances if d < 100) / self.num_samples,
+        }
