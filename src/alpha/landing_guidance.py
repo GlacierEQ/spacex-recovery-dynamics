@@ -3,6 +3,12 @@
 Implements the guidance algorithms for Falcon 9 first stage recovery.
 Suicide burn timing, attitude control, and landing pad targeting.
 Pure math, zero external dependencies.
+
+Note: "Suicide burn" is a misnomer. It's a hoverslam.
+The rocket doesn't die. It just commits very hard to stopping.
+
+If you've ever played Kerbal Space Program, you already understand this.
+If you haven't, go play it. Then come back.
 """
 
 import math
